@@ -830,5 +830,62 @@ for (int i = 0; i < 20; i++) {
 
 
 
+### 3个线程并发执行，1个线程等待这三个线程全部执行完再执行，怎么实现？
+
+可以使用 `CountDownLatch` 来实现 3 个线程并发执行，另一个线程等待这三个线程全部执行完再执行的需求。以下是具体的实现步骤：
+
+- 创建一个 `CountDownLatch` 对象，并将计数器初始化为 3，因为有 3 个线程需要等待。
+- 创建 3 个并发执行的线程，在每个线程的任务结束时调用 `countDown` 方法将计数器减 1。
+- 创建第 4 个线程，使用 `await` 方法等待计数器为 0，即等待其他 3 个线程完成任务。
+
+```java
+import java.util.concurrent.CountDownLatch;
+
+public class CountDownLatchExample {
+    public static void main(String[] args) {
+        // 创建一个 CountDownLatch, 初始计数为 3
+        CountDownLatch latch = new CountDownLatch(3);
+
+        // 创建并启动 3 个并发线程
+        for (int i = 0; i < 3; i++) {
+            final int threadNumber = i + 1;
+            new Thread(() -> {
+                try {
+                    System.out.println("Thread " + threadNumber + " is working.");
+                    // 模拟线程执行任务
+                    Thread.sleep((long) (Math.random() * 1000));
+                    System.out.println("Thread " + threadNumber + " has finished.");
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                } finally {
+                    // 任务完成后, 计数器减 1
+                    latch.countDown();
+                }
+            }).start();
+        }
+
+        // 创建并启动第 4 个线程, 等待其他 3 个线程完成
+        new Thread(() -> {
+            try {
+                System.out.println("Waiting for other threads to finish.");
+                // 等待计数器为 0
+                latch.await();
+                System.out.println("All threads have finished, this thread starts to work.");
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+}
+```
+
+**代码解释**：
+
+- 首先，创建了一个 `CountDownLatch` 对象 `latch`，并将其初始计数设置为 3。
+- 然后，使用 `for` 循环创建并启动 3 个线程。每个线程会执行一些工作（这里使用 `Thread.sleep` 模拟），在工作完成后，会调用 `latch.countDown()` 方法，将 `latch` 的计数减 1。
+- 最后，创建第 4 个线程。这个线程在开始时调用 `latch.await()` 方法，它会阻塞，直到 `latch` 的计数为 0，即前面 3 个线程都调用了 `countDown()` 方法。一旦计数为 0，该线程将继续执行后续任务。
+
+
+
 ## CyclicBarrier
 
