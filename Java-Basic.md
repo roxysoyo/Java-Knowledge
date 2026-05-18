@@ -217,7 +217,12 @@ new 运算符，new 创建对象实例（对象实例在堆内存中），对象
 - **深拷贝**：深拷贝会完全复制整个对象，包括这个对象所包含的内部对象。
 - **引用拷贝**：直接赋值，一个等号就可以
 
+实现深拷贝的方法：
 
+* 手动递归复制
+* 重写 `clone()`，实现 `Cloneable`，逐层调用 `clone()`
+* 序列化与反序列化，实现 `Serializable`，通过流拷贝
+* **Apache Commons Lang**下`SerializationUtils.clone()`第三方库
 
 <div align="center"> <img src="https://oss.javaguide.cn/github/javaguide/java/basis/shallow&deep-copy.png" width="100%"/> </div><br>
 
@@ -284,6 +289,8 @@ protected void finalize() throws Throwable { }
 因为 Java 只有值传递，所以，对于 `==` 来说，不管是比较基本数据类型，还是引用数据类型的变量，其本质比较的都是值，只是引用类型变量存的值是对象的地址。
 
 ### hashCode() 有什么用
+
+**`Object.hashCode()` 默认返回与对象内存地址相关的整数，但不是直接的内存地址。**
 
 `hashCode()` 的作用是获取哈希码（`int` 整数），也称为散列码。这个哈希码的作用是确定该对象在哈希表中的索引位置。
 
@@ -553,3 +560,9 @@ JDK 提供了很多内置的注解（比如 `@Override`、`@Deprecated`），同
 - `transient` 只能修饰变量，不能修饰类和方法。
 - `transient` 修饰的变量，在反序列化后变量值将会被置成类型的默认值。例如，如果是修饰 `int` 类型，那么反序列后结果就是 `0`。
 - `static` 变量因为不属于任何对象(Object)，所以无论有没有 `transient` 关键字修饰，均不会被序列化。
+
+
+
+## 设计模式
+
+[设计模式参考](https://labuladong.online/zh/algo/intro/design-pattern/)
