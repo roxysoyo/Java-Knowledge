@@ -11,15 +11,33 @@
 
 ### 数据结构
 
-常见的有五种数据类型：**String（字符串），Hash（哈希），List（列表），Set（集合）、Zset（有序集合）**。
+- **5 种基础数据类型**：String（字符串）、List（列表）、Set（集合）、Hash（散列）、Zset（有序集合）。
+
+- **3 种特殊数据类型**：HyperLogLog（基数统计）、Bitmap （位图）、Geospatial (地理位置)。
+
+#### String
+
+实现为简单动态字符串（Simple Dynamic String，SDS）。相比于 C 的原生字符串，Redis 的 SDS 不光可以保存文本数据还可以保存二进制数据，并且获取字符串长度复杂度为 O(1)
+
+#### List
+
+实现为一个 双向链表，即可以支持反向查找和遍历。通过 `LRANGE` 命令，你可以基于 List 实现分页查询，性能非常高
+
+#### Hash、Set
+
+Redis 中的 Hash 是一个 String 类型的 field-value（键值对） 的映射表，特别适合用于存储对象，后续操作的时候，可以直接修改这个对象中的某些字段的值。Hash 类似于 JDK1.8 前的 `HashMap`，内部实现也差不多(数组 + 链表)。不过，Redis 的 Hash 做了更多优化。
+
+Set的实现与Hash的`dict`是同一个结构，只不过所有的Value都被置为NULL
+
+#### Zset
+
+Sorted Set 类似于 Set，但和 Set 相比，Sorted Set 增加了一个权重参数 `score`，使得集合中的元素能够按 `score` 进行有序排列，还可以通过 `score` 的范围来获取元素的列表。
+
+`ZRANGE` (从小到大排序)、 `ZREVRANGE` （从大到小排序）、`ZREVRANK` (指定元素排名)
 
 
 
-
-
-
-
-### Redis 线程模型
+## Redis 线程模型
 
 ### Redis 是单线程吗
 
