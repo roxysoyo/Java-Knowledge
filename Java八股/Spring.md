@@ -78,6 +78,15 @@ Spring AOP支持两种动态代理：
 - **基于JDK的动态代理**：使用java.lang.reflect.Proxy类和java.lang.reflect.InvocationHandler接口实现。这种方式需要代理的类实现一个或多个接口。
 - **基于CGLIB的动态代理**：当被代理的类没有实现接口时，Spring会使用CGLIB库生成一个被代理类的子类作为代理。CGLIB（Code Generation Library）是一个第三方代码生成库，通过继承方式实现代理。
 
+
+
+Spring AOP 的核心是动态代理，基于 BeanPostProcessor 在容器初始化 Bean 时介入。
+如果目标对象有接口，就用 JDK 自带的 Proxy 生成接口代理；如果没接口或强制指定，就用 CGLIB 生成子类代理。
+它会先根据 Pointcut 匹配所有的 Advisor，组装成拦截器链，最后通过责任链模式递归执行所有增强逻辑。这是运行时编织，如需拦截构造函数则需考虑 AspectJ 的编译期编织。
+
+**Spring AOP 代理的对象是目标业务类（Target Bean），而不是带有 @Aspect 注解的切面类。**
+切面类只是定义了增强逻辑和匹配规则（Pointcut），Spring 在容器初始化时会根据这些规则去匹配所有的 Bean。一旦某个 Bean 的方法匹配了切点表达式，Spring 就会通过动态代理（JDK Proxy 或 CGLIB）为其生成一个代理对象，并将切面中的增强逻辑织入到这个代理对象的方法调用链中。而带有 @Aspect 注解的类本身仅作为配置元数据，不会被代理。
+
 ### 常用注解
 
 常用的注解包括：
