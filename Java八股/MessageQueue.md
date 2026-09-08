@@ -26,7 +26,188 @@
 2. **Consumer（消费者）** : 消费消息的一方。
 3. **Broker（代理）** : 可以看作是一个独立的 Kafka 实例。多个 Kafka Broker 组成一个 Kafka Cluster。
 4. **Topic（主题）** : Producer 将消息发送到特定的主题，Consumer 通过订阅特定的 Topic(主题) 来消费消息。
-5. **Partition（分区）** : Partition 属于 Topic 的一部分。一个 Topic 可以有多个 Partition ，并且同一 Topic 下的 Partition 可以分布在不同的 Broker 上，这也就表明一个 Topic 可以横跨多个 Broker 。这正如我上面所画的图一样。
+5. **Partition（分区）** : Partition 属于 Topic 的一部分。一个 Topic 可以有多个 Partition ，并且同一 Topic 下的 Partition 可以分布在不同的 Broker 上，这也就表明一个 Topic 可以横跨多个 Broker 。
+
+
+
+> **Topic 是逻辑概念，Partition 是 Topic 的物理分片，而 Broker 是实际存储这些 Partition 的服务器节点。**
+
+所以更准确地说，
+
+> **一个 Topic 属于整个 Kafka Cluster，这个 Topic 的不同 Partition 会分布到不同 Broker 上。**
+
+```
+Kafka Cluster
+
+Broker1
+  └── Topic A - Partition 0
+
+Broker2
+  └── Topic A - Partition 1
+
+Broker3
+  └── Topic A - Partition 2
+
+层级说明
+Cluster
+  ↓
+Topic
+  ↓
+Partition
+  ↓
+存储在 Broker 上
+```
+
+
+
+### 多副本机制Replica
+
+意味着：
+
+> 每个 Partition 有 3 个副本。
+
+注意这里非常重要：
+
+**副本是针对 Partition 的，不是针对 Topic 整体的。**
+
+例如：
+
+```
+Topic A
+3个Partition
+replication-factor = 3
+```
+
+实际意味着：
+
+```
+P0 有3份
+P1 有3份
+P2 有3份
+```
+
+总共：
+
+```
+3 × 3 = 9 个 Partition Replica
+```
+
+例如可以这样分布：
+
+```
+Broker1
+├── P0 Leader
+├── P1 Follower
+└── P2 Follower
+
+Broker2
+├── P1 Leader
+├── P0 Follower
+└── P2 Follower
+
+Broker3
+├── P2 Leader
+├── P0 Follower
+└── P1 Follower
+```
+
+你现在会发现一个很重要的事情：
+
+例如设置：
+
+```
+replication.factor = 3
+```
+
+同一个 Partition 会在多个 Broker 上各保存一份 Replica，其中一个 Replica 是 Leader，其余是 Follower。
+
+
+
+Kafka 为分区引入了多副本机制，每个分区有多个副本，其中一个叫 leader，其余是 follower。生产者与消费者只与 leader 交互，而 follower 则从 leader 中拉取消息进行同步，相当于 leader 的热备份。当 leader 发生故障时，系统会从同步程度达到要求的 follower 中选举出新的 leader，未同步到位的 follower 无法参与竞选。
+
+这种多分区与多副本机制带来了两个主要好处：
+
+1. 通过为同一个 Topic 设置多个分区并将它们分布在不同 Broker 上，实现并行处理和负载均衡，从而提升整体吞吐能力；
+2. 通过为每个分区配置多个副本，增强消息存储的可靠性和容灾能力，即使某个 Broker 或 leader 副本出现故障，也能保证数据不丢失、服务不停歇。当然，副本机制也会相应增加存储空间的占用。
+
+
+
+### 消息发送的过程
+
+```
+Producer
+   ↓
+选择 Topic 
+// producer.send(
+    new ProducerRecord<>("order-topic", "order-1001", "订单创建")
+);
+   ↓
+选择 Partition
+   ↓
+找到这个 Partition 的 Leader
+   ↓
+找到 Leader 所在 Broker
+   ↓
+发送给 Leader Replica
+   ↓
+Follower Replica 同步
+```
+
+
+
+如果未指定Partition的话，Producer 会根据 key 做哈希，然后映射到某个 Partition。
+
+Producer 怎么知道 Leader 在哪个 Broker？
+
+Producer 会维护 Kafka 集群的：
+
+```
+Metadata
+```
+
+可以把它理解为一张地图：
+
+```
+order-topic:
+
+P0 Leader -> Broker1
+P1 Leader -> Broker2
+P2 Leader -> Broker3
+```
+
+以及其他信息。
+
+Producer 启动时你会配置：
+
+```
+bootstrap.servers=broker1:9092,broker2:9092,broker3:9092
+```
+
+很多初学者会误以为：
+
+> Producer 以后一直给 bootstrap.servers 里的 Broker 发消息。
+
+`bootstrap.servers` 更像是：
+
+> “先找任意几个 Kafka 节点问一下整个集群地图。”
+
+例如：
+
+```
+Producer
+   |
+   | 你好，我想认识 Kafka 集群
+   v
+Broker1
+
+Broker1 返回 Metadata：
+
+P0 Leader -> Broker1
+P1 Leader -> Broker2
+P2 Leader -> Broker3
+```
+
+以后 Producer 就知道该找谁了。
 
 
 
@@ -82,20 +263,38 @@ Kafka 的消费者以消费者组的形式工作。一个消费者组中包含�
 
 
 
-### 多副本机制
-
-Kafka 为分区引入了多副本机制，每个分区有多个副本，其中一个叫 leader，其余是 follower。生产者与消费者只与 leader 交互，而 follower 则从 leader 中拉取消息进行同步，相当于 leader 的热备份。当 leader 发生故障时，系统会从同步程度达到要求的 follower 中选举出新的 leader，未同步到位的 follower 无法参与竞选。
-
-这种多分区与多副本机制带来了两个主要好处：
-
-1. 通过为同一个 Topic 设置多个分区并将它们分布在不同 Broker 上，实现并行处理和负载均衡，从而提升整体吞吐能力；
-2. 通过为每个分区配置多个副本，增强消息存储的可靠性和容灾能力，即使某个 Broker 或 leader 副本出现故障，也能保证数据不丢失、服务不停歇。当然，副本机制也会相应增加存储空间的占用。
-
 
 
 ### 如何保证消息的消费顺序
 
 **Kafka 只能保证同一个分区内的消息有序。**
+
+如果业务要求“同一类消息有序”，常见做法是给消息设置相同的 key，让相关消息进入同一个 Partition。例如订单场景：
+
+```
+key = orderId
+```
+
+那么同一个订单：
+
+```
+订单1001 创建
+订单1001 支付
+订单1001 发货
+```
+
+都会进入同一个 Partition：
+
+```
+P1:
+offset 10 创建
+offset 11 支付
+offset 12 发货
+```
+
+Kafka 在 Partition 内按照 offset 顺序存储，Consumer 也按照 offset 顺序消费，因此可以保证同一个订单的消息顺序。
+
+
 
 具体来说，消息被追加到分区时采用尾加法，并分配一个递增的偏移量（offset），消费者按照偏移量顺序拉取，从而实现了分区内的顺序性。如果要求全局消息严格有序，最直接的方法是让一个 Topic 只对应一个分区。这种方式虽然能解决问题，但会破坏 Kafka 通过多分区实现并发与吞吐量的设计初衷，因此不推荐作为常规方案。
 

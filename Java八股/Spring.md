@@ -44,6 +44,14 @@ IoC （Inversion of Control ）即控制反转/反转控制。它是一种思想
 
 
 
+### IoC容器启动流程
+
+
+
+
+
+
+
 ### 从哪些方面设计一个Spring IoC
 
 - Bean的生命周期管理：需要设计Bean的创建、初始化、销毁等生命周期管理机制，可以考虑使用工厂模式和单例模式来实现。
@@ -305,6 +313,14 @@ Spring MVC的工作流程如下：
 - Spring Boot 提供了快速的项目启动器，通过引入不同的 Starter，可以快速集成常用的框架和库（如数据库、消息队列、Web 开发等），极大地提高了开发效率。
 - Spring Boot 默认集成了多种内嵌服务器（如Tomcat、Jetty、Undertow），无需额外配置，即可将应用打包成可执行的 JAR 文件，方便部署和运行。
 
+### Spring Boot的自动装配原理
+
+
+
+
+
+
+
 
 
 ### 设计模式
@@ -379,6 +395,14 @@ Spring MVC的工作流程如下：
 * @Controller
 
 @Controller注解用于标记一个类作为控制层的组件。它也是@Component注解的特例，用于标记控制层的bean。这是MVC结构的另一个部分，加在控制层。
+
+
+
+### @Autowired和@Resource的区别
+
+
+
+
 
 
 
