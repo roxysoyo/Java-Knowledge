@@ -259,6 +259,91 @@ ALTER TABLE `cus_order` ADD INDEX id_score_name(score, name);
 
 
 
+### 什么情况下，使用索引查询会比全表扫描慢
+
+以 InnoDB 为例，最典型的是以下几种情况。
+
+**查询命中数据量太大，索引选择性很差**
+
+问题在于**回表**。
+
+InnoDB 的二级索引叶子节点通常保存：
+
+```
+索引列值 + 主键值
+```
+
+而 `SELECT *` 需要完整数据，所以还需要根据主键再访问聚簇索引。
+
+如果需要回表几百万次，可能产生大量**随机 IO / 随机页访问**。
+
+当命中数据比例很高时，“走索引 + 大量回表”可能比直接全表扫描更贵。
+
+**表本身很小**
+
+索引查询增加了额外的 B+Tree 查找成本，未必比直接扫描快。
+
+**范围查询范围过大**
+
+例如：
+
+```sql
+SELECT *
+FROM orders
+WHERE create_time >= '2020-01-01';
+```
+
+假设总共有：
+
+```
+1000 万行
+```
+
+这个条件命中了：
+
+```
+900 万行
+```
+
+虽然 `create_time` 有索引，但执行：
+
+```
+扫描 create_time 二级索引 900 万条
+            ↓
+获取 900 万个主键
+            ↓
+回表读取 900 万行
+```
+
+很可能不如：
+
+```
+直接扫描整张表
+```
+
+因此你有时候执行：
+
+```sql
+EXPLAIN
+SELECT *
+FROM orders
+WHERE create_time >= '2020-01-01';
+```
+
+可能看到：
+
+```
+type = ALL
+```
+
+不是 MySQL “不会用索引”，而是优化器估算后认为：
+
+> **全表扫描成本更低。**
+
+
+
+
+
 ## MySQL 事务
 
 ### 事务的特点
@@ -345,6 +430,389 @@ SQL 标准定义了四种事务隔离级别，用来平衡事务的隔离性（I
 
 
 
+### 实现原理
+
+#### 隐藏字段实现版本链
+
+InnoDB 每一行记录内部实际上有几个隐藏字段，其中理解 MVCC 最重要的是两个。
+
+可以简单理解成：
+
+```
+真实数据
+
+id = 1
+money = 500
+
+隐藏字段：
+
+DB_TRX_ID
+DB_ROLL_PTR
+```
+
+其中：`DB_TRX_ID`表示：最后一次修改这条记录的事务 ID。
+
+例如：
+
+```
+money = 500
+trx_id = 20
+```
+
+代表事务 20 修改了它。
+
+`DB_ROLL_PTR`指向：这条记录修改之前的旧版本，也就是 Undo Log。
+
+所以：
+
+```
+当前记录
+money=500
+trx_id=20
+roll_ptr
+    │
+    ▼
+money=800
+trx_id=10
+roll_ptr
+    │
+    ▼
+money=1000
+trx_id=5
+```
+
+这样就构成了版本链。
+
+#### Read View快照读
+
+> 当前事务在读取这一刻，对整个数据库事务状态拍了一张照片。”
+
+Read View 会记录：
+
+```
+当前有哪些事务还没提交
+哪些事务已经提交
+事务 ID 大概处于什么范围
+```
+
+然后根据：
+
+```
+记录的 trx_id
++
+Read View
+```
+
+判断：这个版本，我能不能看？
+
+快照读中常用的字段
+
+```
+m_ids
+min_trx_id
+max_trx_id
+creator_trx_id
+```
+
+假设当前：
+
+```
+事务 10 已提交
+
+事务 20 正在执行
+事务 30 正在执行
+
+下一个事务 ID = 40
+```
+
+这时候创建 Read View：
+
+```
+活跃事务集合：
+[20, 30]
+
+最小活跃事务：
+20
+
+下一个待分配事务：
+40
+```
+
+可以大致理解：
+
+```
+          过去                       未来
+
+trx_id
+  ↓
+-------------------------------------------->
+
+      20                    40
+      ↑                     ↑
+   min_trx_id            max_trx_id
+```
+
+判断一个记录版本是否可见，大致可以理解为：
+
+**情况 1：是我自己修改的**
+
+```
+trx_id == creator_trx_id
+```
+
+当然可以看到。
+
+**情况 2：版本非常老**
+
+```
+trx_id < min_trx_id
+```
+
+说明在创建 Read View 时，这个事务早就提交了。
+
+所以：
+
+```
+可见
+```
+
+**情况 3：版本非常新**
+
+```
+trx_id >= max_trx_id
+```
+
+说明这个事务是在我的 Read View 创建之后才出现的。
+
+所以：
+
+```
+不可见
+```
+
+**情况 4：处在中间区域**
+
+就要检查：
+
+```
+trx_id 是否在活跃事务集合 m_ids 里
+```
+
+如果在：
+
+```
+说明创建快照时它还没提交
+→ 不可见
+```
+
+如果不在：
+
+```
+说明它当时已经提交
+→ 可见
+```
+
+于是整个过程就是：
+
+```
+SELECT
+  ↓
+读取当前记录
+  ↓
+检查 trx_id
+  ↓
+根据 Read View 判断是否可见
+  ↓
+可见？
+ ├── 是 → 返回
+ │
+ └── 否
+      ↓
+   roll_ptr
+      ↓
+   找上一个 Undo 版本
+      ↓
+   再判断可见性
+```
+
+这就是 MVCC 的核心工作流程。
+
+
+
+
+
+### READ COMMITTED
+
+RC：**每一次普通 SELECT，都重新生成一个 Read View。**
+
+比如：
+
+```
+事务 A                    事务 B
+
+BEGIN
+
+SELECT money
+→ 1000
+
+                           UPDATE → 500
+                           COMMIT
+
+SELECT money
+→ 500
+```
+
+为什么？第一次 SELECT：
+
+```
+Read View 1
+```
+
+此时事务 B 可能还没有提交：
+
+```
+B 不可见
+→ 看到 1000
+```
+
+第二次 SELECT：
+
+```
+重新生成 Read View 2
+```
+
+这时候 B 已经提交：
+
+```
+B 可见
+→ 看到 500
+```
+
+所以：
+
+```
+RC：
+
+SELECT 1 → Read View A
+SELECT 2 → Read View B
+SELECT 3 → Read View C
+```
+
+每条语句都拍一次新的照片。所以叫：READ COMMITTED。每次都可以读到：“当前已经提交的最新数据”
+
+### REPEATABLE READ
+
+RR：**事务中的第一次一致性读创建 Read View，后面的普通一致性读通常复用这个 Read View。**
+
+例如：
+
+```
+事务 A                    事务 B
+
+BEGIN
+
+SELECT money
+→ 创建 Read View
+→ 1000
+
+                           UPDATE → 500
+                           COMMIT
+
+SELECT money
+→ 仍然使用原来的 Read View
+→ 1000
+```
+
+所以：
+
+```
+RR：
+
+SELECT 1 ─┐
+          │
+SELECT 2 ─┼→ 同一个 Read View
+          │
+SELECT 3 ─┘
+```
+
+这就是为什么：
+
+```
+第一次：1000
+第二次：1000
+第三次：1000
+```
+
+即使其他事务已经把它修改成：
+
+```
+500
+```
+
+仍然可以通过：
+
+```
+Undo Log 版本链
+```
+
+找到：
+
+```
+1000
+```
+
+所以你以后可以用一句话记住 RC 和 RR：
+
+```
+RC：
+一条 SELECT 一张照片
+
+RR：
+一个事务一张照片
+```
+
+更严谨一点：对 InnoDB 普通一致性读而言，RC 每次一致性读生成新的 Read View；RR 通常在事务第一次一致性读时创建 Read View，并在后续一致性读中复用。
+
+
+
+```
+                 InnoDB 事务隔离
+                       │
+          ┌────────────┴────────────┐
+          │                         │
+        读取                      修改
+          │                         │
+   ┌──────┴──────┐                  │
+   │             │                  │
+快照读         当前读              当前读
+   │             │                  │
+SELECT         SELECT ...          UPDATE
+              FOR UPDATE           DELETE
+              FOR SHARE            INSERT
+   │             │                  │
+   ↓             └────────┬─────────┘
+ MVCC                     ↓
+   │                    锁机制
+   │                      │
+   ├─ Undo Log           ├─ Record Lock
+   │                     ├─ Gap Lock
+   ├─ 版本链             └─ Next-Key Lock
+   │
+   ├─ trx_id
+   │
+   ├─ roll_ptr
+   │
+   └─ Read View
+         │
+         ├─ RC：每次一致性读创建
+         │
+         └─ RR：事务内通常复用
+```
+
+
+
+
+
 ## MySQL 锁
 
 ### 表级锁和行级锁
@@ -401,49 +869,64 @@ SELECT ... FOR UPDATE;
 
 ### 快照读和当前读
 
-**快照读**（一致性非锁定读）就是单纯的 `SELECT` 语句，但不包括下面这两类 `SELECT` 语句：
+#### 快照读（Snapshot Read）
+
+**定义**：读取的是事务开始时（或第一次快照读时）的一个“一致性视图”，也就是历史版本，而不是最新数据。
+
+**特点**：
+
+- 不加锁（普通 `SELECT`）
+- 读到的数据在事务内可能一直不变（可重复读隔离级别下）
+- 依赖 **undo log + Read View** 实现
+
+**典型语句**：
 
 ```sql
-SELECT ... FOR UPDATE
-# 共享锁 可以在 MySQL 5.7 和 MySQL 8.0 中使用
-SELECT ... LOCK IN SHARE MODE;
-# 共享锁 可以在 MySQL 8.0 中使用
-SELECT ... FOR SHARE;
+SELECT * FROM t WHERE id = 1;
 ```
 
-快照即记录的历史版本，每行记录可能存在多个历史版本（多版本技术）。
+#### 当前读（Current Read）
 
-快照读的情况下，如果读取的记录正在执行 UPDATE/DELETE 操作，读取操作不会因此去等待记录上 X 锁的释放，而是会去读取行的一个快照。
+**定义**：读取的是数据库中**最新已提交**的版本，并且会对读取的记录加锁，防止其他事务并发修改。
 
-只有在事务隔离级别 RC(读取已提交) 和 RR（可重读）下，InnoDB 才会使用一致性非锁定读：
+**特点**：
 
-- 在 RC 级别下，对于快照数据，一致性非锁定读总是读取被锁定行的最新一份快照数据。
-- 在 RR 级别下，对于快照数据，一致性非锁定读总是读取本事务开始时的行数据版本。
+- 加锁（共享锁或排他锁），给==行记录加 X 锁或 S 锁==。
+- 读到的是最新数据
+- 不依赖 Read View
 
-快照读比较适合对于数据一致性要求不是特别高且追求极致性能的业务场景。
-
-可重复读隔离级是由 MVCC（多版本并发控制）实现的，实现的方式是开始事务后（执行 begin 语句后），在执行第一个查询语句后，会创建一个 Read View，**后续的查询语句利用这个 Read View，通过这个 Read View 就可以在 undo log 版本链找到事务开始时的数据，所以事务过程中每次查询的数据都是一样的**，即使中途有其他事务插入了新纪录，是查询不出来这条数据的，所以就很好地避免了幻读问题。
-
-
-
-**当前读** （一致性锁定读）就是给==行记录加 X 锁或 S 锁==。
-
-当前读的一些常见 SQL 语句类型如下：
+**典型语句**：
 
 ```sql
-# 对读的记录加一个X锁
-SELECT...FOR UPDATE
-# 对读的记录加一个S锁
-SELECT...LOCK IN SHARE MODE
-# 对读的记录加一个S锁
-SELECT...FOR SHARE
-# 对修改的记录加一个X锁
-INSERT...
-UPDATE...
-DELETE...
+SELECT * FROM t WHERE id = 1 FOR UPDATE;      -- 排他锁
+SELECT * FROM t WHERE id = 1 LOCK IN SHARE MODE; -- 共享锁
+INSERT / UPDATE / DELETE;                      -- 也是当前读
 ```
 
+运行
 
+> 注意：`UPDATE`、`DELETE` 在执行时，会先做一次“当前读”找到要修改的行，然后再修改。
+
+
+
+#### Read View（读视图）
+
+**定义**：Read View 是 InnoDB 在**快照读**时生成的一个==数据结构==，用来判断“当前事务能看到哪个版本的数据”。
+
+它主要包含：
+
+- `m_ids`：生成 Read View 时，当前活跃（未提交）的事务 ID 列表
+- `min_trx_id`：活跃事务中的最小事务 ID
+- `max_trx_id`：下一个将要分配的事务 ID
+- `creator_trx_id`：创建该 Read View 的事务 ID
+
+
+
+快照读和当前读是两种读方式。
+
+**快照读会生成 Read View**，生成时机由隔离级别决定（RC 每次生成，RR 首次生成后复用）。
+
+**当前读不生成 Read View**，它直接读最新已提交版本并加锁。
 
 
 
@@ -468,6 +951,42 @@ MySQL 中数据是以页为单位，你查询一条记录，会从硬盘把一�
 而且数据页刷盘是随机写，因为一个数据页对应的位置可能在硬盘文件的随机位置，所以性能是很差。
 
 如果是写 redo log，一行记录可能就占几十 `Byte`，只包含表空间号、数据页号、磁盘文件偏移量、更新值，再加上是顺序写，所以刷盘速度很快。所以用 redo log 形式记录修改内容，性能会远远超过刷数据页的方式，这也让数据库的并发能力更强。
+
+> **Redo Log 不是对某条旧日志“原地修改”，而是不断顺序追加；由于 Redo 总容量有限，当旧 Redo 已经没有恢复价值时，它占用的空间可以被循环复用。**
+
+这就是经典的：
+
+```
+环形 / 循环写
+```
+
+概念模型可以画成：
+
+```
+        Redo Log
+
+     ┌───────────────┐
+     │               ▼
+┌────┬────┬────┬────┬────┐
+│ A  │ B  │ C  │ D  │ E  │
+└────┴────┴────┴────┴────┘
+ ▲                   │
+ └───────────────────┘
+```
+
+不停往前写：
+
+```
+write position
+      ↓
+A B C D E
+```
+
+到末尾以后，继续从已经可以复用的旧区域写，所以经常说：Redo Log 是循环写的。MySQL 8.4 官方文档的描述是：Redo 随数据修改不断 append，而最旧的 Redo 随 checkpoint 推进而被截断/回收；Redo 总容量由 `innodb_redo_log_capacity` 控制。
+
+Redo Log 顺序追加写，旧 Redo 在对应脏页已经安全落盘、Checkpoint 推进之后，其日志空间可以循环复用。
+
+
 
 ### binlog
 
@@ -521,6 +1040,41 @@ binlog 的写入时机也非常简单，事务执行过程中，先把日志写�
 - **上图的 fsync，才是将数据持久化到磁盘的操作**
 
 `write`和`fsync`的时机，可以由参数`sync_binlog`控制，默认是`1`。
+
+
+
+可以先建立一个简化流程：
+
+```
+                 UPDATE money = 500
+                         │
+                         ▼
+               读取数据到 Buffer Pool
+                         │
+                         ▼
+                  修改数据之前
+                         │
+                         ▼
+                    Undo Log
+                 记录旧版本 1000
+                         │
+                         ▼
+                  修改内存数据页
+                 1000 → 500
+                         │
+                         ▼
+                    Redo Log
+                 记录页面修改信息
+                         │
+                         ▼
+                     Binlog
+                 记录逻辑修改
+                         │
+                         ▼
+                      COMMIT
+```
+
+注意这是为了理解的简化图，真实内部过程还涉及 Redo prepare/commit、Binlog 写入和刷盘等。
 
 
 
@@ -653,19 +1207,622 @@ InnoDB的每一行数据（聚簇索引）里，除了我们定义的列，还�
 
 
 
+# JOIN
+
+### INNER JOIN 内连接
+
+内连接的核心是：
+
+> **两边都能匹配上的数据，才返回。**
+
+```
+SELECT u.id, u.name, o.product
+FROM user u
+INNER JOIN orders o
+    ON u.id = o.user_id;
+```
+
+结果：
+
+```
+id   name   product
+1    张三   手机
+1    张三   电脑
+2    李四   耳机
+```
+
+为什么没有王五？
+
+因为：
+
+```
+user.id = 3
+```
+
+在 `orders` 中找不到对应数据。
+
+为什么没有 `user_id = 4` 的键盘订单？
+
+因为：
+
+```
+orders.user_id = 4
+```
+
+在 `user` 中找不到对应用户。
+
+所以你可以把 INNER JOIN 理解成两个集合的：
+
+```
+A ∩ B
+```
+
+即：
+
+```
+        A        B
+       ┌───┐  ┌───┐
+       │  ┌────┐  │
+       │  │返回│  │
+       │  └────┘  │
+       └───┘  └───┘
+```
+
+> **INNER JOIN：只要匹配成功的数据。**
+
+### LEFT JOIN 左连接
+
+左连接的核心是：
+
+> **左表全部保留，右表有匹配就带出来，没有匹配就补 NULL。**
+
+比如：
+
+```
+SELECT u.id, u.name, o.product
+FROM user u
+LEFT JOIN orders o
+    ON u.id = o.user_id;
+```
+
+这里：
+
+```
+user 是左表
+orders 是右表
+```
+
+结果：
+
+```
+id   name   product
+1    张三   手机
+1    张三   电脑
+2    李四   耳机
+3    王五   NULL
+```
+
+为什么王五也出来？
+
+因为 LEFT JOIN 的规则是：
+
+```
+左表 user 的数据必须全部留下
+```
+
+虽然：
+
+```
+王五没有订单
+```
+
+但是仍然返回：
+
+```
+王五   NULL
+```
+
+而 `orders` 里面：
+
+```
+104  user_id=4  键盘
+```
+
+不会出现，因为左表 `user` 中没有 id=4。
+
+所以：
+
+> LEFT JOIN 的“左”，不是说 SQL 里的左边条件，而是 `JOIN` 前面的表。
+
+```
+FROM user u
+LEFT JOIN orders o
+```
+
+这里 `user` 就是左表。
+
+一句话：
+
+> **LEFT JOIN：左表我全都要，右表能匹配多少算多少。**
+
+这个非常好记。
+
+### RIGHT JOIN 右连接
+
+反过来：
+
+> **右表全部保留，左表能匹配就匹配，匹配不上就补 NULL。**
+
+```
+SELECT u.id, u.name, o.product
+FROM user u
+RIGHT JOIN orders o
+    ON u.id = o.user_id;
+```
+
+结果：
+
+```
+id     name   product
+1      张三   手机
+1      张三   电脑
+2      李四   耳机
+NULL   NULL   键盘
+```
+
+因为：
+
+```
+orders
+```
+
+现在是右表，所以订单必须全部留下。
+
+即使：
+
+```
+user_id = 4
+```
+
+找不到用户，也得返回：
+
+```
+NULL NULL 键盘
+```
+
+一句话：
+
+> **RIGHT JOIN：右表我全都要，左表能匹配多少算多少。**
+
+**左连接和右连接，本质上一样**。
+
+```
+                     JOIN
+                       │
+              ┌────────┴─────────┐
+              │                  │
+           Inner Join         Outer Join
+           内连接               外连接
+              │                  │
+              │          ┌───────┼────────┐
+              │          │       │        │
+              │        LEFT    RIGHT     FULL
+              │
+              │
+        只保留匹配数据
+
+LEFT：
+左边全部保留
+
+RIGHT：
+右边全部保留
+
+FULL：
+两边全部保留
+```
+
+而：
+
+```
+Self Join
+```
+
+是另外一个维度：
+
+```
+是不是同一张表和自己 JOIN？
+
+是
+↓
+Self Join
+```
+
+
+
 
 
 ## 其他
+
+
+
+
+
+
+
+### MySQL 中“去除重复数据”
+
+> **查询结果去重**，以及 **把表里已经存在的重复行真正删除掉**。
+
+**self join**
+
+先查询哪些数据重复，最基本的方法是：
+
+```
+SELECT phone, COUNT(*)
+FROM user
+GROUP BY phone
+HAVING COUNT(*) > 1;
+```
+
+比如得到：
+
+```
+phone     count
+138001      3
+```
+
+这里需要注意：
+
+```
+WHERE
+```
+
+是在分组之前过滤数据；
+
+```
+HAVING
+```
+
+是在 `GROUP BY` 分组之后过滤，所以判断重复通常使用：
+
+```
+HAVING COUNT(*) > 1
+```
+
+删除重复数据：Self Join
+
+如果希望：
+
+> phone 相同的记录，只保留 id 最小的一条。
+
+```
+DELETE t1
+FROM user t1
+JOIN user t2
+  ON t1.phone = t2.phone
+ AND t1.id > t2.id;
+```
+
+假设：
+
+```
+id    phone
+1     138001
+3     138001
+5     138001
+```
+
+自己和自己 JOIN：
+
+```
+t1.id    t2.id
+3        1
+5        1
+5        3
+```
+
+条件：
+
+```
+t1.id > t2.id
+```
+
+说明：
+
+> 只要当前记录前面存在一条更小 id 的相同 phone 数据，那么当前记录就是重复记录。
+
+所以最终删除：
+
+```
+3
+5
+```
+
+留下：1
+
+### Union关键字
+
+`UNION` 用来把**多个 SELECT 的结果集合并成一个结果集**。
+
+最核心的理解是：
+
+> `JOIN` 是“横向拼列”，`UNION` 是“纵向拼行”。
+
+比如有两张表：
+
+```
+student_a
+id   name
+1    张三
+2    李四
+student_b
+id   name
+3    王五
+4    赵六
+```
+
+执行：
+
+```
+SELECT id, name FROM student_a
+UNION
+SELECT id, name FROM student_b;
+```
+
+结果：
+
+```
+1  张三
+2  李四
+3  王五
+4  赵六
+```
+
+也就是把第二个查询结果接到第一个查询结果下面。
+
+`UNION` 会**自动去重**：
+
+```
+SELECT name FROM t1
+UNION
+SELECT name FROM t2;
+```
+
+假设两个结果分别是：
+
+```
+t1:
+张三
+李四
+
+t2:
+张三
+王五
+```
+
+最终结果：
+
+```
+张三
+李四
+王五
+```
+
+而 `UNION ALL` 不去重：
+
+```
+SELECT name FROM t1
+UNION ALL
+SELECT name FROM t2;
+```
+
+结果：
+
+```
+张三
+李四
+张三
+王五
+```
+
+所以性能上通常：
+
+```
+UNION ALL
+```
+
+会比：
+
+```
+UNION
+```
+
+更快，因为不需要额外做去重。
+
+如果业务本身不要求去重，通常优先使用：
+
+```
+UNION ALL
+```
+
+**使用 UNION 条件**
+
+多个 SELECT 的**列数必须一致**。
+
+正确：
+
+```
+SELECT id, name FROM user
+UNION
+SELECT id, name FROM employee;
+```
+
+错误：
+
+```
+SELECT id, name FROM user
+UNION
+SELECT id FROM employee;
+```
+
+因为一个返回两列，一个返回一列。
+
+同时对应位置的数据类型最好兼容，例如：
+
+```
+SELECT id, name
+UNION
+SELECT user_id, username
+```
+
+可以，因为：
+
+```
+id      ↔ user_id
+name    ↔ username
+```
+
+最终结果列名通常以**第一个 SELECT 的列名**为准。
+
+例如：
+
+```sql
+SELECT id AS user_id, name AS username
+FROM user
+
+UNION ALL
+
+SELECT emp_id, emp_name
+FROM employee;
+```
+
+最终列名是：
+
+```
+user_id
+username
+```
+
+**`ORDER BY` 怎么写**
+
+如果想对最终 UNION 的整体结果排序，一般放在最后：
+
+```sql
+SELECT id, name
+FROM user
+
+UNION ALL
+
+SELECT id, name
+FROM employee
+
+ORDER BY id;
+```
+
+意思是：
+
+```
+先合并
+↓
+再对最终结果排序
+```
+
+而不是分别排序。
+
+**一个实际场景**
+
+比如系统里有两张订单表：
+
+```
+online_order
+offline_order
+```
+
+想查用户所有订单：
+
+```
+SELECT order_id, user_id, amount
+FROM online_order
+WHERE user_id = 100
+
+UNION ALL
+
+SELECT order_id, user_id, amount
+FROM offline_order
+WHERE user_id = 100;
+```
+
+这就是非常典型的 UNION 场景。
+
+
+
+MySQL 不直接支持：
+
+```
+FULL OUTER JOIN
+```
+
+有时可以用：
+
+```
+LEFT JOIN
+UNION
+RIGHT JOIN
+```
+
+来模拟。
+
+例如：
+
+```
+SELECT *
+FROM user u
+LEFT JOIN orders o
+ON u.id = o.user_id
+
+UNION
+
+SELECT *
+FROM user u
+RIGHT JOIN orders o
+ON u.id = o.user_id;
+```
+
+这样可以把左右两边没有匹配到的数据都保留下来。
+
+------
+
+面试里可以这样回答：
+
+> `UNION` 用于合并多个 SELECT 的结果集，相当于把结果按行纵向拼接。多个 SELECT 的列数必须一致，对应字段的数据类型需要兼容。
+>
+> `UNION` 会自动去重，而 `UNION ALL` 不去重，所以如果业务不要求去重，一般优先使用 `UNION ALL`，性能会更好。
+>
+> 如果需要对最终结果排序，`ORDER BY` 通常写在最后，对 UNION 后的整体结果进行排序。
+
+最后记住：
+
+```
+JOIN       → 横向拼接列
+UNION      → 纵向拼接行
+
+UNION      → 合并 + 去重
+UNION ALL  → 合并，不去重，通常更快
+```
+
+
+
+
+
+
+
+
 
 ### count(*) 和 count(1) 性能
 
 count(*) = count(1) > count(主键字段) > count(字段)
 
-#### count() 是什么？
-
 count() 是一个聚合函数，函数的参数不仅可以是字段名，也可以是其他任意表达式，该函数作用是**统计符合查询条件的记录中，函数指定的参数不为 NULL 的记录有多少个**。
-
-#### count(主键字段)
 
 `COUNT(主键)` 执行时，Server 层逐条读取记录并判断主键是否为 NULL（实际不会为 NULL）。优化器会优先选择最小的二级索引来遍历，因为二级索引叶子节点只存主键值、记录更小、每页存更多记录、遍历 I/O 成本更低，从而提升统计速度。
 

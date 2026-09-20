@@ -713,6 +713,40 @@ public class PriorityPolicy implements RejectedExecutionHandler {
 
 
 
+
+
+### 创建线程池内存溢出的原因
+
+线程池导致 OOM 主要有两个方向。
+
+第一是**任务堆积导致堆内存溢出**，例如 `newFixedThreadPool` 使用无界 `LinkedBlockingQueue`，当任务提交速度长期大于消费速度时，大量 Runnable 会堆积在队列中，而且这些 Runnable 可能还持有业务对象，最终造成 `Java heap space`。
+
+第二是**线程创建过多导致 Native Memory 耗尽**，例如 `newCachedThreadPool` 的最大线程数接近无限，当任务大量阻塞时会不断创建新线程，而每个线程都需要线程栈等本地内存，最终可能出现 `unable to create new native thread`。
+
+除此之外，线程池线程生命周期比较长，如果 `ThreadLocal` 没有及时 `remove`，或者任务、Future 长期持有大对象，也可能造成内存泄漏。
+
+所以生产环境通常应该手动创建 `ThreadPoolExecutor`，合理设置 `corePoolSize`、`maximumPoolSize`、**有界队列**和拒绝策略，同时结合业务吞吐量做容量评估。
+
+可以把它记成一个很实用的模型：
+
+```
+线程池 OOM
+
+             ┌→ 无界任务队列 → Runnable堆积 → Heap OOM
+任务太多 ────┤
+             └→ Future/大对象积压 → Heap OOM
+
+             ┌→ 线程数无限增长
+线程太多 ────┤
+             └→ Thread Stack耗尽 → unable to create native thread
+
+生命周期过长 ─→ ThreadLocal未清理 → 内存泄漏
+```
+
+
+
+
+
 ### 线程池中线程异常后，销毁还是复用？
 
 - **使用`execute()`提交任务**：当任务通过`execute()`提交到线程池并在执行过程中抛出异常时，如果这个异常没有在任务内被捕获，那么该异常会导致当前线程终止，并且异常会被打印到控制台或日志文件中。线程池会检测到这种线程终止，并创建一个新线程来替换它，从而保持配置的线程数不变。

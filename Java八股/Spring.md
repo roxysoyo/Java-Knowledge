@@ -46,9 +46,43 @@ IoC （Inversion of Control ）即控制反转/反转控制。它是一种思想
 
 ### IoC容器启动流程
 
+如果是传统 Spring：
 
+```
+new AnnotationConfigApplicationContext(AppConfig.class);
+```
 
+核心流程最终会进入：
 
+```
+refresh()
+```
+
+所以面试中可以直接说：
+
+> Spring IoC 容器启动的核心方法是 `AbstractApplicationContext#refresh()`。
+
+整体流程可以先记：
+
+```
+创建 ApplicationContext
+        ↓
+加载 BeanDefinition
+        ↓
+refresh()
+        ↓
+创建 BeanFactory
+        ↓
+执行 BeanFactoryPostProcessor
+        ↓
+注册 BeanPostProcessor
+        ↓
+初始化事件、国际化等组件
+        ↓
+实例化非懒加载单例 Bean
+        ↓
+容器启动完成
+```
 
 
 
@@ -313,9 +347,432 @@ Spring MVC的工作流程如下：
 - Spring Boot 提供了快速的项目启动器，通过引入不同的 Starter，可以快速集成常用的框架和库（如数据库、消息队列、Web 开发等），极大地提高了开发效率。
 - Spring Boot 默认集成了多种内嵌服务器（如Tomcat、Jetty、Undertow），无需额外配置，即可将应用打包成可执行的 JAR 文件，方便部署和运行。
 
-### Spring Boot的自动装配原理
+### 自动装配原理
 
+> **Spring Boot 根据当前项目的依赖、配置和已有 Bean，通过条件判断，自动把合适的配置类导入 Spring 容器。**
 
+它的核心不是“自动创建一切”，而是：
+
+```
+自动发现候选配置类
+        ↓
+根据条件进行筛选
+        ↓
+把满足条件的配置类注册进 Spring 容器
+        ↓
+配置类再创建对应 Bean
+```
+
+**入口：`@SpringBootApplication`**
+
+Spring Boot 启动类通常是：
+
+```java
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+```
+
+`@SpringBootApplication` 本质上是一个组合注解，核心可以理解为：
+
+```java
+@SpringBootConfiguration
+@EnableAutoConfiguration
+@ComponentScan
+public @interface SpringBootApplication {
+}
+```
+
+这里和**自动装配直接相关的核心注解**是：
+
+```java
+@EnableAutoConfiguration
+```
+
+所以面试时第一句话可以说：
+
+> Spring Boot 自动装配的入口是 `@EnableAutoConfiguration`。
+
+------
+
+**`@EnableAutoConfiguration` **
+
+它的核心逻辑可以抽象成：
+
+```java
+@Import(AutoConfigurationImportSelector.class)
+```
+
+也就是说，Spring 在解析配置类的时候，会通过：
+
+```
+@EnableAutoConfiguration
+        ↓
+@Import
+        ↓
+AutoConfigurationImportSelector
+```
+
+动态决定：
+
+> **到底应该往 Spring 容器里导入哪些自动配置类。**
+
+这里的 `AutoConfigurationImportSelector` 是理解自动装配源码非常重要的类。
+
+------
+
+**自动配置类从哪里来？**
+
+Spring Boot 自己准备了大量自动配置类，比如：
+
+```
+DataSourceAutoConfiguration
+WebMvcAutoConfiguration
+RedisAutoConfiguration
+KafkaAutoConfiguration
+JacksonAutoConfiguration
+...
+```
+
+Spring Boot 3.x 中，自动配置类主要记录在：
+
+```
+META-INF/spring/
+org.springframework.boot.autoconfigure.AutoConfiguration.imports
+```
+
+里面可以简单理解成：
+
+```
+DataSourceAutoConfiguration
+RedisAutoConfiguration
+KafkaAutoConfiguration
+WebMvcAutoConfiguration
+...
+```
+
+Spring Boot 启动的时候，会读取这些候选配置类。
+
+因此流程变成：
+
+```
+@SpringBootApplication
+        ↓
+@EnableAutoConfiguration
+        ↓
+AutoConfigurationImportSelector
+        ↓
+读取 AutoConfiguration.imports
+        ↓
+得到大量候选自动配置类
+```
+
+有一个面试中容易碰到的版本区别：
+
+> 早期 Spring Boot 经常讲 `META-INF/spring.factories`；较新的 Spring Boot 版本中，自动配置类主要通过 `AutoConfiguration.imports` 声明。
+
+所以如果面试官问：
+
+> Spring Boot 自动配置类在哪里配置？
+
+现在回答 `AutoConfiguration.imports` 会更加准确，同时可以补充老版本使用过 `spring.factories`。
+
+------
+
+**这些配置类不会全部生效**
+
+> **Conditional 条件装配。**
+
+比如一个简化版的 Redis 自动配置可能类似：
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(RedisOperations.class)
+@EnableConfigurationProperties(RedisProperties.class)
+public class RedisAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public RedisTemplate redisTemplate() {
+        return new RedisTemplate();
+    }
+}
+```
+
+这里：
+
+```java
+@ConditionalOnClass(RedisOperations.class)
+```
+
+意思是：
+
+> classpath 中存在 Redis 相关类，才启用这个自动配置。
+
+而：
+
+```
+@ConditionalOnMissingBean
+```
+
+意思是：
+
+> 容器里没有用户自己定义的 Bean，我才帮你创建。
+
+这就是为什么 Spring Boot 的自动配置经常表现为：
+
+```
+你没配置 → Boot 帮你配置
+
+你自己配置了 → Boot 让开
+```
+
+这实际上是 Spring Boot 很重要的设计思想：
+
+> **约定优于配置，同时允许用户覆盖默认配置。**
+
+------
+
+**常见的条件注解**
+
+自动装配很大程度上就是依赖这些 `@ConditionalXXX`。
+
+| 注解                           | 含义                   |
+| ------------------------------ | ---------------------- |
+| `@ConditionalOnClass`          | classpath 中存在某个类 |
+| `@ConditionalOnMissingClass`   | 不存在某个类           |
+| `@ConditionalOnBean`           | 容器中存在某个 Bean    |
+| `@ConditionalOnMissingBean`    | 容器中不存在某个 Bean  |
+| `@ConditionalOnProperty`       | 配置文件满足指定条件   |
+| `@ConditionalOnWebApplication` | 当前是 Web 应用        |
+
+比如：
+
+```
+@ConditionalOnProperty(
+    prefix = "xxx",
+    name = "enabled",
+    havingValue = "true"
+)
+```
+
+就可以实现：
+
+```
+xxx:
+  enabled: true
+```
+
+配置为 `true`：
+
+```
+创建 Bean
+```
+
+配置为 `false`：
+
+```
+不创建 Bean
+```
+
+因此你可以把自动装配进一步总结成：
+
+```
+候选配置类 + 条件判断 = 最终生效的自动配置
+```
+
+------
+
+**为什么引入 Starter 就能直接用？**
+
+这又可以把前面的知识串起来。
+
+比如你引入一个 Starter：
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+Starter 本身最重要的一件事就是：
+
+> **帮你把需要的依赖组织好。**
+
+于是：
+
+```
+引入 Redis Starter
+        ↓
+Redis 相关类出现在 classpath
+        ↓
+Spring Boot 检查 @ConditionalOnClass
+        ↓
+条件成立
+        ↓
+RedisAutoConfiguration 生效
+        ↓
+创建 RedisTemplate 等 Bean
+```
+
+所以：
+
+> **Starter 和自动装配不是同一个东西。**
+
+可以这么理解：
+
+```
+Starter
+    ↓
+解决“需要引入哪些依赖”
+
+AutoConfiguration
+    ↓
+解决“这些依赖引入后，该创建哪些 Bean”
+```
+
+这个区别非常适合面试。
+
+------
+
+**配置文件为什么能改变自动配置？**
+
+比如：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/test
+    username: root
+    password: 123456
+```
+
+Spring Boot 会通过：
+
+```
+@ConfigurationProperties(prefix = "spring.datasource")
+```
+
+把配置文件中的属性绑定成 Java 对象。
+
+例如：
+
+```
+application.yml
+
+spring.datasource.url
+spring.datasource.username
+        ↓
+@ConfigurationProperties
+        ↓
+DataSourceProperties
+        ↓
+DataSourceAutoConfiguration
+        ↓
+创建 DataSource
+```
+
+所以 Spring Boot 自动装配通常是三块协同工作的：
+
+```
+AutoConfiguration
+      +
+Conditional
+      +
+ConfigurationProperties
+```
+
+也就是：
+
+```
+自动配置类
++
+条件装配
++
+配置属性绑定
+```
+
+------
+
+把整个流程串起来
+
+面试时脑子里最好有这一张图：
+
+```
+@SpringBootApplication
+        ↓
+@EnableAutoConfiguration
+        ↓
+AutoConfigurationImportSelector
+        ↓
+读取
+META-INF/spring/
+AutoConfiguration.imports
+        ↓
+获得大量 AutoConfiguration
+        ↓
+@ConditionalOnClass
+@ConditionalOnBean
+@ConditionalOnMissingBean
+@ConditionalOnProperty
+        ↓
+筛选出满足条件的配置类
+        ↓
+注册 BeanDefinition
+        ↓
+Spring 创建 Bean
+        ↓
+完成自动装配
+```
+
+例如 Redis：
+
+```
+引入 Redis Starter
+        ↓
+Redis 类出现在 classpath
+        ↓
+RedisAutoConfiguration 成为候选配置
+        ↓
+@ConditionalOnClass 条件成立
+        ↓
+检查用户有没有自定义 RedisTemplate
+        ↓
+没有
+        ↓
+@ConditionalOnMissingBean 成立
+        ↓
+自动创建 RedisTemplate
+```
+
+**总结**
+
+> Spring Boot 自动装配的入口是 `@SpringBootApplication` 中的 `@EnableAutoConfiguration`。它会通过 `AutoConfigurationImportSelector` 导入自动配置类。Spring Boot 3 中这些候选自动配置类主要定义在 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 中。
+>
+> 但这些自动配置类并不是全部生效，而是会通过 `@ConditionalOnClass`、`@ConditionalOnMissingBean`、`@ConditionalOnProperty` 等条件注解，根据当前项目的 classpath、已有 Bean 和配置文件决定是否生效。
+>
+> 条件满足后，相应的 AutoConfiguration 会被注册进 Spring 容器，并通过 `@Bean` 创建对象。同时通过 `@ConfigurationProperties` 将 `application.yml` 中的配置绑定到配置对象。
+>
+> 所以自动装配的核心可以概括为：**候选自动配置类的加载 + Conditional 条件筛选 + Bean 注册。**
+>
+> 而 Starter 主要负责依赖管理，AutoConfiguration 负责根据这些依赖自动创建和配置 Bean。
+
+如果继续往 Spring Boot 源码走，建议你沿着这一条线看：
+
+```
+@SpringBootApplication
+→ @EnableAutoConfiguration
+→ AutoConfigurationImportSelector
+→ selectImports()
+→ getAutoConfigurationEntry()
+→ getCandidateConfigurations()
+→ 条件过滤
+→ 注册配置类
+```
 
 
 
