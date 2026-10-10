@@ -356,7 +356,7 @@ hashmap不是线程安全的，hashmap在多线程会存在下面的问题：
 
 ### 为什么HashMap一般使用String做Key
 
-用 string 做 key，因为 String对象是不可变的，一旦创建就不能被修改，这确保了Key的稳定性。如果Key是可变的，可能会导致hashCode和equals方法的不一致，进而影响HashMap的正确性。
+用 string 做 key，因为 String对象是不可变的，一旦创建就不能被修改，这确保了Key的稳定性。如果 Key 在放入 HashMap 后发生变化，并且变化的字段参与了 `hashCode()` 或 `equals()` 的计算，那么该 Key 的 hashCode 或 equals 结果可能发生变化，导致 HashMap 无法按照原来的桶位置正确找到它，进而影响HashMap的正确性。
 
 hashmap key可以为null
 

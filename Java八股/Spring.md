@@ -48,7 +48,7 @@ IoC （Inversion of Control ）即控制反转/反转控制。它是一种思想
 
 如果是传统 Spring：
 
-```
+```Java 
 new AnnotationConfigApplicationContext(AppConfig.class);
 ```
 
@@ -813,6 +813,155 @@ RedisAutoConfiguration 成为候选配置
 
 
 
+## Mybatis
+
+MyBatis是JDBC 的高级封装，SQL 仍然由开发者控制。
+
+MyBatis 负责：参数映射、SQL 执行、结果映射、缓存、动态代理、插件机制
+
+主要分为两个阶段：启动初始化阶段、SQL 执行阶段。
+
+### 底层原理
+
+MyBatis 启动的时候，会解析：
+
+```
+mybatis-config.xml
+Mapper.xml
+Mapper 接口上的注解
+```
+
+然后构建一个非常核心的对象：Configuration
+
+> **MyBatis 全局配置中心。**
+
+里面保存：
+
+```
+数据源
+事务配置
+Mapper
+TypeHandler
+插件
+MappedStatement
+ResultMap
+缓存
+...
+```
+
+MappedStatement是一条 SQL 配置在 MyBatis 内存里的完整描述。
+
+里面包含：
+
+```
+SQL 类型
+SELECT / UPDATE / DELETE / INSERT
+
+SQL Source
+
+参数类型
+
+ResultMap
+
+缓存配置
+
+StatementType
+
+超时时间
+...
+```
+
+然后放到：Configuration中。
+
+MyBatis 使用动态代理，为 Mapper 接口生成代理对象。
+
+核心对象：MapperProxy
+
+可以简单理解：
+
+```
+UserMapper
+    ↓
+JDK 动态代理
+    ↓
+MapperProxy
+    ↓
+生成代理对象
+```
+
+调用链路
+
+```
+            Mapper 接口
+                │
+                │ 调用方法
+                ▼
+          MapperProxy
+          JDK 动态代理
+                │
+                ▼
+           MapperMethod
+                │
+                │
+                ▼
+            SqlSession
+                │
+                ▼
+          MappedStatement
+       找到对应 SQL 配置
+                │
+                ▼
+             Executor
+           SQL 执行器
+                │
+                ▼
+        StatementHandler
+                │
+        ┌───────┴────────┐
+        │                │
+        ▼                ▼
+ParameterHandler    ResultSetHandler
+        │                │
+    参数设置           结果映射
+        │                │
+        ▼                ▼
+       TypeHandler    TypeHandler
+        │                │
+        └───────┬────────┘
+                ▼
+        PreparedStatement
+                │
+                ▼
+              JDBC
+                │
+                ▼
+              MySQL
+```
+
+
+
+MyBatis 本质上是对 JDBC 的一层封装，它主要帮助我们解决 SQL 配置、参数绑定、SQL 执行以及结果集到 Java 对象的映射。
+
+MyBatis 启动时会解析全局配置和 Mapper XML，把每一条 SQL 封装成 `MappedStatement`，统一保存到 `Configuration` 中，MappedStatement 中包含 SQL、参数映射、ResultMap 等信息。
+
+当我们调用 Mapper 接口时，实际上调用的并不是真正的实现类，因为 Mapper 一般没有实现类。MyBatis 会通过 JDK 动态代理生成 Mapper 的代理对象，也就是 `MapperProxy`。代理对象根据 Mapper 接口全限定名和方法名找到对应的 MappedStatement。
+
+接下来调用会进入 `SqlSession`，SqlSession 再委托给 `Executor` 执行。Executor 会处理缓存等逻辑，然后交给 `StatementHandler`。StatementHandler 最终创建 JDBC 的 `PreparedStatement`。
+
+执行 SQL 前，`ParameterHandler` 会配合 `TypeHandler` 把 Java 参数设置到 PreparedStatement 中；SQL 执行完成后，`ResultSetHandler` 再配合 ResultMap 和 TypeHandler，把 JDBC ResultSet 转换成 Java 对象。
+
+所以整体调用链可以概括成：
+
+`MapperProxy → SqlSession → Executor → StatementHandler → JDBC`，
+
+参数由 `ParameterHandler` 负责，结果由 `ResultSetHandler` 负责。
+
+因此 MyBatis 的底层核心其实就是 **JDBC 封装 + Mapper 动态代理 + SQL 映射 + 参数/结果映射 + 缓存和插件机制**。
+
+
+
+
+
 ## 其他
 
 ### 常用设计模式
@@ -861,9 +1010,41 @@ RedisAutoConfiguration 成为候选配置
 
 
 
+### @Transactional
+
+**7 种传播行为**，定义在 `Propagation` 枚举中。
+
+| 传播行为             | 当前有事务              | 当前无事务 |
+| :------------------- | :---------------------- | :--------- |
+| **REQUIRED**（默认） | 加入                    | 新建       |
+| **REQUIRES_NEW**     | 挂起当前，新建          | 新建       |
+| **NESTED**           | 嵌套子事务（Savepoint） | 新建       |
+| **SUPPORTS**         | 加入                    | 非事务执行 |
+| **NOT_SUPPORTED**    | 挂起当前，非事务执行    | 非事务执行 |
+| **MANDATORY**        | 加入                    | **抛异常** |
+| **NEVER**            | **抛异常**              | 非事务执行 |
+
+REQUIRED vs REQUIRES_NEW
+
+|          | REQUIRED | REQUIRES_NEW     |
+| :------- | :------- | :--------------- |
+| 物理事务 | 同一个   | 两个独立         |
+| 内层回滚 | 影响外层 | 不影响外层       |
+| 外层回滚 | 影响内层 | 不影响内层       |
+| 连接     | 共用     | 可能占用两个连接 |
+
+REQUIRES_NEW vs NESTED
+
+|            | REQUIRES_NEW | NESTED                   |
+| :--------- | :----------- | :----------------------- |
+| 物理事务   | 两个独立事务 | 同一个事务 + Savepoint   |
+| 内层回滚   | 完全独立     | 回滚到 Savepoint         |
+| 外层回滚   | 不影响内层   | 连带内层一起回滚         |
+| 数据库支持 | 通用         | 需要 JDBC Savepoint 支持 |
 
 
-### 什么情况下事务会失效
+
+#### 事务失效原因
 
 1. **异常被 try-catch 吞掉**
 

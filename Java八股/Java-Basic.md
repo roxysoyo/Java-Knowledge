@@ -63,6 +63,22 @@ Java 中有三种移位运算符：
 
 
 
+### transient关键字
+
+`transient` 是 Java 的字段修饰符，主要用来修饰成员变量，表示这个字段不参与 Java 原生序列化。
+
+之所以需要它，是因为一个对象中有些字段不适合持久化，比如密码等敏感数据、缓存和临时计算结果、线程和 Socket 等运行时资源，或者本身不可序列化的对象。
+
+被 `transient` 修饰的字段在反序列化后会变成对应类型的默认值，比如引用类型是 `null`，`int` 是 `0`。
+
+`static` 字段虽然也不会被对象序列化，但原因不同：`static` 属于类而不是实例，所以天然不属于对象序列化的内容；而 `transient` 是对一个本来属于实例的字段主动排除。
+
+另外，`transient` 主要针对 Java 的 `Serializable` 机制，JSON 等第三方序列化框架是否识别它，要看框架自身规则。
+
+
+
+
+
 ## 基本数据类型
 
 Java 中有 8 种基本数据类型，分别为：
@@ -99,6 +115,105 @@ Java 基本数据类型的包装类型的大部分都用到了缓存机制来提
 计算机是二进制的，而且计算机在表示一个数字时，宽度是有限的，无限循环的小数存储在计算机时，只能被截断，所以就会导致小数精度发生损失的情况。这也就解释了为什么浮点数没有办法用二进制精确表示。
 
 `BigDecimal` 可以实现对浮点数的运算，不会造成精度丢失。通常情况下，大部分需要浮点数精确运算结果的业务场景（比如涉及到钱的场景）都是通过 `BigDecimal` 来做的。
+
+
+
+### 计算类的大小
+
+Java 里“一个对象多大”要先区分两种概念：
+
+- **Shallow Size（浅大小）**：对象自身占用的内存，不包括它引用的其他对象。
+- **Retained / Deep Size（深大小）**：对象自身 + 只能通过它访问到的其他对象所占内存。
+
+1. 一个普通 Java 对象由什么组成
+
+HotSpot JVM 中，一个对象大致由三部分组成：
+
+```
+对象大小 = 对象头 + 实例数据 + 对齐填充
+```
+
+最终对象大小通常要按照 **8 字节对齐**。对象最终占用的空间，要是 8 的整数倍。
+
+
+
+普通 Java 对象的对象头，主要分两部分：
+
+```
+Object Header
+├── Mark Word
+└── Klass Pointer
+```
+
+以常见的：
+
+```
+64 位 HotSpot
+开启压缩类指针
+```
+
+为例：
+
+```
+Mark Word       8B
+Klass Pointer   4B
+------------------
+               12B
+```
+
+`Mark Word` 是对象的**运行时元数据**。
+
+你可以把它理解成：
+
+> JVM 为每个对象保留的一块“状态信息区域”。
+
+它通常会根据对象当前状态复用这些位，保存诸如：
+
+```
+HashCode
+GC 分代年龄
+锁状态
+锁相关信息
+```
+
+例如大致可以理解成：
+
+```
+Mark Word 64 bit
+
+┌──────────────────────────────┐
+│ hashCode / 锁信息 / GC age ... │
+└──────────────────────────────┘
+```
+
+> 一个什么字段都没有的 Java 对象占多少内存？
+
+在典型的：
+
+```
+64 位 HotSpot
+开启压缩指针
+8B 对齐
+```
+
+情况下：
+
+```
+Mark Word       8B
+Klass Pointer   4B
+------------------
+               12B
+```
+
+但需要进行 8 字节对齐：
+
+```
+12B → 16B
+```
+
+因此：一个空对象通常占 **16 字节**。
+
+如果实际想准确查看对象布局，可以使用 OpenJDK 的 JOL 工具；也可以使用 Instrumentation 的 `getObjectSize()` 获取对象的 shallow size。
 
 
 
@@ -185,7 +300,17 @@ public class StringExample {
 new 运算符，new 创建对象实例（对象实例在堆内存中），对象引用指向对象实例（对象引用存放在栈内存中）。
 
 - 一个对象引用可以指向 0 个或 1 个对象（一根绳子可以不系气球，也可以系一个气球）；
-- 一个对象可以有 n 个引用指向它（可以用 n 条绳子系住一个气球）。
+- 一个对象可以有 n 个引用指向它（可以用 n 条绳子系住一个气球）。：
+
+Java 创建对象主要有：
+
+```
+1. new
+2. 反射
+3. clone
+4. 反序列化
+5. Unsafe.allocateInstance()
+```
 
 ### 对象的相等和引用相等
 
@@ -585,3 +710,83 @@ JDK 提供了很多内置的注解（比如 `@Override`、`@Deprecated`），同
 ## 设计模式
 
 [设计模式参考](https://labuladong.online/zh/algo/intro/design-pattern/)
+
+### 单例模式
+
+懒汉式和饿汉式的核心区别就一个字：**"懒"**——即**是否延迟创建实例**。
+
+| 类型       | 核心特征         | 创建时机               |
+| :--------- | :--------------- | :--------------------- |
+| **饿汉式** | "饿"了，迫不及待 | **类加载时**就创建     |
+| **懒汉式** | "懒"，能拖就拖   | **第一次使用时**才创建 |
+
+#### 饿汉式
+
+```java
+public class Singleton {
+    // 类加载时就创建，不管你用不用
+    private static final Singleton instance = new Singleton();
+
+    private Singleton() {}
+
+    public static Singleton getInstance() {
+        return instance;
+    }
+}
+```
+
+#### 懒汉式
+
+```java
+public class Singleton {
+    // 必须加 volatile
+    private static volatile Singleton instance;
+
+    private Singleton() {}
+
+    public static Singleton getInstance() {
+        // 第一次检查：避免每次都要加锁
+        if (instance == null) {
+            // 加锁：保证只有一个线程能创建实例
+            synchronized (Singleton.class) {
+                // 第二次检查：防止多个线程重复创建
+                if (instance == null) {
+                    instance = new Singleton();
+                }
+            }
+        }
+        return instance;
+    }
+}
+```
+
+直观判断技巧
+
+看**静态变量声明时有没有直接 `new`**：
+
+- `private static Singleton instance = new Singleton();` → **饿汉式**（声明即创建）
+- `private static Singleton instance;` → **懒汉式**（声明时不创建，用的时候才 new）
+
+
+
+
+
+#### 为什么必须加volatile关键字
+
+`new` 不是原子操作
+
+`instance = new Singleton();` 这行代码在 JVM 中实际分为三步：
+
+1. **分配内存空间**
+2. **初始化对象**（调用构造方法）
+3. **将 instance 引用指向内存地址**
+
+
+
+
+
+## 其他
+
+> Linux服务器上有一个 Java性能的 CPU用的比较高，一般用什么命令去看?
+
+**`top`**（找进程 PID）→ **`top -Hp`**（找线程 PID）→ **`printf`**（转十六进制）→ **`jstack`**（看代码调用）。

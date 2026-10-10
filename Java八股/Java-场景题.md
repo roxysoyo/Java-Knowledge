@@ -2,6 +2,55 @@
 
 
 
+1.用过线程池吗?一般用来处理哪些任务?
+2.线程池满了怎么办?除了拒绝任务还有哪些处理方式?
+3.你怎么理解程序崩溃?编译错误和运行时崩溃有什么区别?
+4.程序运行过程中异常退出，应该怎么排查?
+5.Java 程序异常退出有哪些情况?会留下什么日志?怎么定位到具体线程和代码位置?
+6.进程 CPU 占用很高，可能是什么原因?怎么排查?
+7.任务堆积一定会导致 CPU 占用升高吗?为什么?
+8.如果任务处理不过来，为什么不直接把线程池开到 100、200 个线程?
+9.线程上下文切换为什么有开销?具体需要做哪些事情?
+10.用户态切换到内核态为什么有开销?
+11.为什么要区分用户态和内核态?
+
+
+
+12.一次请求通过 RPC 框架发送到对端，整个过程是什么?
+13.RPC 中的代理拦截是什么意思?具体拦截了什么?
+14.请求从应用层进入网络栈，到发送出去，还会经过哪些处理?
+15.请求数据很大时，传输层和网络层会怎么处理?会把整个请求一次性发出去吗?
+16.数据被拆分后，接收端怎么恢复出完整数据?
+17.如果中间丢了一两段数据，是不是要把整个大文件重新传一遍?
+18.对端进程退出、机器突然断电、网络不通，另一端分别能不能感知?
+19.TCP 的 RST 是什么意思?应用程序会感知到什么?
+20.如果对端挂了，另一端会一直等待吗?怎么避免?
+21.怎样主动检测对端是否可用?心跳机制怎么实现?
+
+
+
+22.给你一大块内存，让你实现内存申请和释放，怎么设计?
+23.申请内存时，怎么找到“合适”的空闲块?
+24.释放内存后，空闲块什么时候合并?具体怎么合并?
+25.如果 4 KB 和1MB 的内存申请交错进行，释放小块后仍然无法满足大块申请，怎么减少内存碎片、提高利用率?
+
+
+
+26.JVM 怎么管理内存?一个新对象的内存具体怎么分配?
+27.新生代和老年代怎么工作?Eden空间不足时怎么处理?
+28.客户端内存很小，文件又非常大无法一次性读入内存，怎么上传到服务端?
+29.Redis bitmap 最多支持多少位?可以用于哪些场景?
+30.进程间通信有哪些方式?
+31.线程之间有哪些通信和同步方式?
+32.手写一个线程安全、有容量上限的生产者消费者队列，提供 push和 pop 方法。
+33.手撕算法:对一个乱序单链表进行原地排序。
+
+
+
+
+
+
+
 ## Java-Collection相关
 
 
@@ -37,47 +86,6 @@ A1:
 
 
 场景题：热点榜单实时更新如何保证高并发？数据结构如何设计？数据库如何选型？
-
-
-
-## Redis相关
-
-### Q1：分布式锁设计
-
-你项目里写了 Redis，说一下分布式锁；
-Redis 分布式锁具体怎么实现？
-机器在上锁之后、业务执行过程中宕机了，这个锁怎么办？
-机器宕机之后，finally 还会执行吗？
-锁的超时时间怎么设置？ 
-如果锁超时时间设置成 15 分钟，用户这 15 分钟内都不能下单，合理吗？
-
-
-
-**A1:**
-
-**分布式锁解决的问题**：多个服务实例、同时处理同一个资源、可能出现并发修改、需要分布式锁
-
-**分布式锁需要考虑哪些问题**：怎么获得锁、业务宕机怎么办、finally会不会执行、TTL设置
-
-* 获得锁
-
-```java
-SET lock:order:123 uuid-xxx NX PX 30000
-```
-
-nx满足互斥，px设置过期时间，uuid-xxx锁标识，防止误删；三个操作需要满足原子性
-
-* 业务宕机
-
-机器宕机后无法主动释放锁，因此 Redis 分布式锁必须设置 TTL。持锁机器宕机后，Redis 会在 TTL 到期后自动释放锁，从而避免出现死锁。
-
-* finally执行
-
-finally 只能保证在当前 JVM 正常进行异常控制流退出时执行，比如业务抛异常后还能进入 finally；但如果 JVM 进程直接被 kill、机器宕机、JVM 崩溃，finally 是无法保证执行的。
-
-* TTL设置
-
-根据业务的处理时间RT P95时间来确定。TTL 太短，业务没执行完锁就过期，可能导致多个实例同时执行；TTL 太长，机器宕机后锁会长时间占用资源。如果业务执行时间不可控，可以采用自动续期
 
 
 
@@ -430,6 +438,29 @@ CREATE TABLE orders(
 > Caffeine + Redis二级缓存具体缓存什么？活动开始前怎么做缓存预热？ 
 
 在秒杀系统中可以采用 Caffeine + Redis 二级缓存架构。Caffeine作为JVM本地缓存，主要缓存活动配置、商品详情、秒杀规则等读多写少的数据，减少应用访问Redis的网络开销；Redis作为分布式缓存，负责多实例共享数据。但库存、用户购买资格等强一致数据不放入Caffeine，而由Redis Lua统一控制。活动开始前，通过定时任务提前加载活动信息到Redis，并通过消息通知各应用实例完成Caffeine预热，避免秒杀开始瞬间大量请求穿透到数据库。
+
+
+
+#### 如何处理缓存的数据特别大的情况
+
+要先区分两种“大”：**单条缓存值很大**，还是**需要缓存的记录总量很大**。处理方式不同。
+
+如果是单条值很大，例如把一家店的所有优惠券、评论和图片信息塞进一个 Redis key，建议拆开：店铺基本信息单独缓存，优惠券和评论按页缓存，图片只存 URL、不存图片内容。接口也按需取数据，避免一次读取和传输整个对象。压缩可以作为补充，但会增加 CPU 开销，应先测量再决定。
+
+如果是记录总量很大，不必把数据库全部搬进 Redis。优先缓存访问频繁的数据，设置合理 TTL 和内存淘汰策略；低频数据直接查数据库。还要监控 Redis 内存、命中率和大 key，避免缓存反过来成为瓶颈。
+
+#### 创建订单耗时很长怎么办
+
+HTTP 接口做 Redis 预扣库存并发送 Kafka 消息，然后消费者异步写数据库。因此，接口返回快，不等于订单已经创建完成。
+
+建议先分别测这两个时间：
+
+- **接口响应慢**：记录 token 校验、Redis 生成 ID、Lua 执行、Kafka `send` 各段耗时，重点看 Redis 连接池等待、Kafka 连接与应用日志开销。
+- **接口已返回订单 ID，但数据库很久才有订单**：重点看 Kafka consumer lag，以及查重、扣库存、插入订单各段耗时。当前订单落库逻辑 (line 105)每单都要获取 Redisson 锁，再进行数据库查重、扣库存和插入；监听器没有显式配置消费并发。
+
+查明瓶颈后再处理：数据库查重慢就确认 `(user_id, voucher_id)` 联合索引**已在实际数据库执行**；Kafka 积压就评估增加分区和消费者并发，但同一张券的库存行仍可能成为数据库锁热点，不能只靠加线程解决。
+
+
 
 热点数据怎么识别？如果某个服务实例重启，刚好错过MQ广播的缓存失效消息怎么办？
 
@@ -847,3 +878,657 @@ Kafka消费相关：原有4台服务消费，消费速率慢，扩容到8台，�
 
 Kafka同一个消费组内，同一个分区可以被几个消费者消费？该设计有什么好处？ 
 
+
+
+### Q5：分布式锁设计
+
+#### 为什么需要分布式锁
+
+分布式场景下，多实例部署
+
+```
+服务A JVM            服务B JVM
+
+synchronized         synchronized
+      ↓                    ↓
+   同一业务资源         同一业务资源
+```
+
+两个 JVM 的锁互相不知道，因此失效。
+
+所以需要：
+
+```
+服务A ─┐
+服务B ─┼──> 公共协调组件
+服务C ─┘
+```
+
+大家共同竞争同一把锁。
+
+#### 合格的分布式锁
+
+* 互斥性：同一时间只能一个客户端获得锁；
+* 防死锁：如果拿锁的机器突然挂了，没来得及取消锁，不能让锁永远存在。必须有过期时间；
+* 只能释放自己的锁：锁必须记录：**锁的 owner。**
+* 加锁、解锁必须原子：
+* 可重入性：同一线程再次获取同一把锁时，最好能够成功，而不是把自己锁死。
+
+#### redis实现基础分布式锁
+
+加锁：
+
+```
+SET lock:key requestId NX PX 30000
+```
+
+解锁：
+
+```
+Lua：
+if value == requestId
+    DEL
+```
+
+解决了：
+
+```
+互斥性
++
+死锁
++
+误删别人的锁
++
+原子释放
+```
+
+#### 过期时间如何确定
+
+思路：
+
+```
+获得锁
+
+TTL = 30s
+
+后台线程定期续期
+```
+
+例如：
+
+```
+0s    获取锁，TTL=30s
+10s   续期 → 30s
+20s   续期 → 30s
+30s   续期 → 30s
+...
+```
+
+只要业务线程还活着，就不断延长锁。
+
+业务完成：
+
+```
+unlock
+```
+
+停止续期。
+
+如果服务器挂了：
+
+```
+WatchDog也没了
+```
+
+30秒后锁自动释放。
+
+所以：
+
+> **TTL解决死锁，WatchDog解决业务执行时间不可预测的问题。**
+
+
+
+#### 可重入如何设计
+
+例如：
+
+```
+lock.lock();
+
+methodB();
+```
+
+而：
+
+```
+methodB() {
+    lock.lock();
+}
+```
+
+如果只是：
+
+```
+SET NX
+```
+
+第二次一定失败。所以需要记录：
+
+```
+owner
++
+重入次数
+```
+
+可以用 Redis Hash：
+
+```
+lock:order:1001
+
+{
+    owner_A : 2
+}
+```
+
+第一次加锁：
+
+```
+不存在
+↓
+owner_A = 1
+```
+
+第二次同线程加锁：
+
+```
+发现owner还是自己
+↓
+owner_A = 2
+```
+
+第一次unlock：
+
+```
+2 → 1
+```
+
+第二次unlock：
+
+```
+1 → 0
+↓
+真正DEL
+```
+
+整个过程仍然应该通过 Lua 原子执行。
+
+这就是：
+
+> **Reentrant Distributed Lock。**
+
+Redisson实际上帮我们把这些复杂逻辑封装好了。
+
+
+
+#### 没有抢到锁
+
+主要有三种策略。
+
+方式1：立即失败
+
+```
+tryLock()
+```
+
+没拿到：
+
+```
+直接返回
+```
+
+适合：
+
+- 防重复请求
+- 定时任务抢占
+
+方式2：自旋重试
+
+例如：
+
+```
+拿锁失败
+↓
+sleep 50ms
+↓
+重新尝试
+```
+
+但一定：
+
+```
+有限次数 / 有超时时间
+```
+
+否则造成Redis巨大压力。
+
+方式3：等待通知
+
+更高级的实现不会一直轮询。例如 Redisson 可以结合：
+
+```
+Pub/Sub
+```
+
+锁释放时通知等待者。降低无效轮询。
+
+
+
+
+
+## 算法相关
+
+### Q1：排序top K
+
+长度为 n 的无序数组，找最大的 k 个
+
+常见做法有：
+
+方法一：排序后取前 k 个
+
+- 时间复杂度：`O(n log n)`
+- 空间复杂度：`O(1)` 或 `O(n)`，取决于排序实现
+- 优点：简单
+- 缺点：当 `k << n` 时，没必要全排序
+
+方法二：维护一个大小为 k 的最小堆
+
+- 遍历数组，先用前 k 个元素建一个**最小堆**
+- 对后面每个元素：
+  - 如果它比堆顶大，就替换堆顶，并调整堆
+  - 否则跳过
+- 遍历完后，堆里就是最大的 k 个元素
+- 时间复杂度：`O(n log k)`
+- 空间复杂度：`O(k)`
+- 适合：`k` 远小于 `n`，且数据可以流式处理
+
+方法三：快速选择（QuickSelect）
+
+- 类似快速排序的分区思想
+- 平均时间复杂度：`O(n)`
+- 最坏时间复杂度：`O(n^2)`
+- 空间复杂度：`O(1)` 或 `O(log n)`
+- 缺点：需要能随机访问整个数组，通常要求数据都在内存里
+
+**内存只能容纳约 1000 个数，数据总量 10 万，要找最大 1 万**
+
+方案 A：分块排序，再归并取前 1 万
+
+1. 把 10 万个数分成若干块，每块大小不超过内存限制，比如每块 1000 个。
+2. 每块读入内存，排序后写回磁盘。
+3. 得到 100 个有序块。
+4. 对这些有序块做**多路归并**，从大到小取前 1 万个。
+5. 归并时只需要每块读一个当前最大元素进内存，用最大堆维护这些块头。
+6. 取满 1 万个就停止。
+
+- 时间复杂度：分块排序 `O(n log b)`，归并取前 k 个 `O(k log m)`，其中 `b` 是块大小，`m` 是块数。
+- 空间复杂度：`O(b + m)`，可以控制在内存限制内。
+- 结果可以边归并边写到外部存储。
+
+方案 B：如果允许“结果也写磁盘”，用最小堆 + 外部存储
+
+如果内存能放下 1 万个结果，那最简单：
+
+1. 维护一个大小为 1 万的最小堆。
+2. 流式读取 10 万个数。
+3. 比堆顶大就替换。
+4. 最后堆里就是答案。
+
+
+
+### Q2：LRU变种
+
+**基础实现**
+
+```python
+class Node:
+    def __init__(self, key=0, value=0):
+        self.prev = None
+        self.next = None
+        self.key = key
+        self.value = value
+
+
+class LRUCache:
+
+    def __init__(self, capacity: int):
+        self.dummy = Node(value=-1)
+        self.dummy.prev = self.dummy
+        self.dummy.next = self.dummy
+        self.capacity = capacity
+        self.node_map = {}
+
+    def get_node(self, key):
+        if key not in self.node_map:
+            return
+        node = self.node_map[key]
+        self.remove(node)
+        self.put_front(node)
+        return node
+
+    def put_front(self, node):
+        self.dummy.next.prev = node
+        node.next = self.dummy.next
+        self.dummy.next = node
+        node.prev = self.dummy
+
+    def remove(self, node):
+        node.prev.next = node.next
+        node.next.prev = node.prev
+
+    def get(self, key: int) -> int:
+        node = self.get_node(key)
+        return node.value if node else -1
+
+    def put(self, key: int, value: int) -> None:
+        node = self.get_node(key)
+        if node:
+            node.value = value
+            return
+        node = Node(key, value)
+        self.node_map[key] = node
+        self.put_front(node)
+        if len(self.node_map) > self.capacity:
+            last_node = self.dummy.prev
+            self.remove(last_node)
+            del self.node_map[last_node.key]
+
+
+# Your LRUCache object will be instantiated and called as such:
+# obj = LRUCache(capacity)
+# param_1 = obj.get(key)
+# obj.put(key,value)
+
+```
+
+**并发控制版**
+
+保留原来的哈希表 + 双向循环链表结构，只增加一把互斥锁，并且让 `get()` / `put()` 整个复合操作都在锁内执行。
+
+重点不是给每个小函数都加锁，而是要保证：
+
+```
+node_map 查询/修改
++
+链表 remove
++
+链表 put_front
++
+淘汰尾节点
+```
+
+这一整组操作对其他线程看起来是“原子的”。
+
+```python
+import threading
+
+class Node:
+    def __init__(self, key=0, value=0):
+        self.prev = None
+        self.next = None
+        self.key = key
+        self.value = value
+
+
+class LRUCache:
+
+    def __init__(self, capacity: int):
+        self.dummy = Node(value=-1)
+        self.dummy.prev = self.dummy
+        self.dummy.next = self.dummy
+        self.capacity = capacity
+        self.node_map = {}
+        # 上锁
+        self.lock = threading.Lock()
+
+    def get_node(self, key):
+        if key not in self.node_map:
+            return
+        node = self.node_map[key]
+        self.remove(node)
+        self.put_front(node)
+        return node
+
+    def put_front(self, node):
+        self.dummy.next.prev = node
+        node.next = self.dummy.next
+        self.dummy.next = node
+        node.prev = self.dummy
+
+    def remove(self, node):
+        node.prev.next = node.next
+        node.next.prev = node.prev
+
+    def get(self, key: int) -> int:
+        # 上锁
+        with self.lock:
+            node = self.get_node(key)
+            return node.value if node else -1
+
+    def put(self, key: int, value: int) -> None:
+        # 上锁
+        with self.lock:
+            node = self.get_node(key)
+            if node:
+                node.value = value
+                return
+            node = Node(key, value)
+            self.node_map[key] = node
+            self.put_front(node)
+            if len(self.node_map) > self.capacity:
+                last_node = self.dummy.prev
+                self.remove(last_node)
+                del self.node_map[last_node.key]
+
+
+# Your LRUCache object will be instantiated and called as such:
+# obj = LRUCache(capacity)
+# param_1 = obj.get(key)
+# obj.put(key,value)
+
+```
+
+**含TTL的**
+
+设置全局ttl
+
+```python
+import threading
+import time
+
+
+class Node:
+    def __init__(self, key=0, value=0, expire_at=None):
+        self.prev = None
+        self.next = None
+        self.key = key
+        self.value = value
+        self.expire_at = expire_at
+
+
+class LRUCache:
+    def __init__(self, capacity: int, ttl: float):
+        self.capacity = capacity
+        self.ttl = ttl
+
+        self.node_map = {}
+
+        self.dummy = Node()
+        self.dummy.prev = self.dummy
+        self.dummy.next = self.dummy
+
+        self.lock = threading.Lock()
+
+    def _remove(self, node):
+        node.prev.next = node.next
+        node.next.prev = node.prev
+
+    def _put_front(self, node):
+        first = self.dummy.next
+
+        node.prev = self.dummy
+        node.next = first
+
+        self.dummy.next = node
+        first.prev = node
+
+    def _delete_node(self, node):
+        self._remove(node)
+        del self.node_map[node.key]
+
+    def _is_expired(self, node):
+        return time.monotonic() >= node.expire_at
+
+    def _get_node(self, key):
+        node = self.node_map.get(key)
+
+        if node is None:
+            return None
+
+        # TTL 判断
+        if self._is_expired(node):
+            self._delete_node(node)
+            return None
+
+        # 没过期，更新 LRU 顺序
+        self._remove(node)
+        self._put_front(node)
+
+        return node
+
+    def get(self, key: int) -> int:
+        with self.lock:
+            node = self._get_node(key)
+
+            if node is None:
+                return -1
+            # get 成功，重置 TTL
+        		node.expire_at = time.monotonic() + self.ttl
+
+            return node.value
+
+    def put(self, key: int, value: int) -> None:
+        with self.lock:
+            node = self._get_node(key)
+
+            expire_at = time.monotonic() + self.ttl
+
+            # key 已存在
+            if node is not None:
+                node.value = value
+
+                # put 时刷新 TTL
+                node.expire_at = expire_at
+                return
+
+            # key 不存在 / 已过期
+            node = Node(
+                key=key,
+                value=value,
+                expire_at=expire_at
+            )
+
+            self.node_map[key] = node
+            self._put_front(node)
+
+            # 超容量
+            if len(self.node_map) > self.capacity:
+                last_node = self.dummy.prev
+                self._delete_node(last_node)
+```
+
+
+
+如果希望：
+
+```
+LRU 操作 O(1)
++
+TTL 可以主动清理
+```
+
+往往需要第二套数据结构。例如：
+
+```
+HashMap
+    key -> Node
+
+LRU Doubly Linked List
+    维护访问顺序
+
+Min Heap
+    维护过期时间
+```
+
+结构变成：
+
+```
+                   ┌──────────────┐
+                   │   HashMap    │
+                   │ key -> Node  │
+                   └──────┬───────┘
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ↓                         ↓
+      Doubly Linked List           Min Heap
+       LRU访问顺序                 TTL过期顺序
+
+     newest -> oldest          earliest -> latest
+```
+
+这时候：
+
+```
+链表：
+负责 LRU
+
+最小堆：
+负责 TTL
+```
+
+最小堆堆顶永远是：
+
+```
+最早过期节点
+```
+
+所以：
+
+```python
+while heap[0].expire_at <= now:
+    pop
+```
+
+就可以高效清理过期项。
+
+### Q3：评论系统设计
+
+> 参考短视频平台设计评论系统，需要考虑哪些内容？包括表结构设计、主键设计以及分库分表方案
+
+短视频评论系统首先要根据主要访问模式设计数据模型。核心查询通常是按照videoId查询某个视频的一级评论和楼中楼回复，因此评论主表会包含commentId、videoId、userId、rootCommentId、parentCommentId、replyToUserId、内容、点赞数、回复数、状态和创建时间等字段。数据库不会真正构建无限层级树，而是使用一级评论加楼中楼的两级模型，通过rootCommentId快速查询某条一级评论下面的回复。
+
+主键不能简单使用数据库自增，因为后续需要分库分表，我会使用Snowflake或者Leaf生成全局唯一、趋势递增的BIGINT评论ID，既能够保证跨库唯一，又有利于InnoDB聚簇索引写入。
+
+分库分表方面，由于最核心查询是按videoId查评论，因此主评论表优先使用videoId作为分片键，比如8库32表，通过hash(videoId)进行路由。这样查询单视频评论可以直接定位到一个分片，不需要广播查询。
+
+但videoId分片存在超级热门视频的数据倾斜问题，对于超热点视频可以进一步按照videoId加bucket做二级分片，将一个视频评论拆成多个桶，查询时做多路归并。普通视频不做这种处理，避免增加系统复杂度。
+
+对于“查询用户历史评论”这种非videoId维度的访问，不会扫描所有评论分片，而是额外维护按userId分片的user_comment_index索引表。
+
+查询评论列表使用基于createTime和commentId的游标分页，避免深分页。点赞数、回复数和评论总数不会全部实时更新MySQL热点行，而是Redis实时计数，通过Kafka异步聚合落库；热评则通过Redis ZSet维护热度排序。
+
+> 整体原则就是：**主表围绕核心查询做分片，其他查询维度通过索引表解决；Redis承担热点和排序，Kafka处理异步事件，MySQL保存最终事实数据。**
+
+最后可以记住这几个面试关键词：
+
+> **两级评论模型、Snowflake主键、videoId分片、热点二级分桶、反向索引表、游标分页、Redis热数据、MQ最终一致。**
